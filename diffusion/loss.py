@@ -49,6 +49,7 @@ def p_losses(
 
     # 3. Calculate Loss
     # 정답 noise와 예측 noise의 차이를 계산
+    # l2 loss: MSE
     if loss_type == 'l1':
         loss = F.l1_loss(noise, predicted_noise)
     elif loss_type == 'l2':
