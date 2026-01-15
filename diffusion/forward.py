@@ -12,12 +12,13 @@ def q_sample(
     noise: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """
+    Diffuse the data (t steps)
     Forward Diffusion Process: q(x_t | x_0) (Eq. 4)
     x_t = sqrt(alpha_bar_t) * x_start + sqrt(1 - alpha_bar_t) * epsilon
 
     Args:
         x_start (torch.Tensor): 원본 이미지 (Batch, Channel, Height, Width), 범위 [-1, 1]
-        t (torch.Tensor): 타임스텝 (Batch,)
+        t (torch.Tensor): timestep (Batch,)
         schedule (DiffusionSchedule): 미리 계산된 스케줄 객체
         noise (torch.Tensor, optional): 주입할 가우시안 노이즈 (epsilon). 
                                       None이면 내부에서 생성.
