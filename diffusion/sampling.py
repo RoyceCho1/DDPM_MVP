@@ -76,7 +76,7 @@ def p_sample_loop(
     
     # Step 2: Iterate from T-1 down to 0
     # tqdm으로 진행 상황 표시
-    for i in tqdm(reversed(range(0, schedule.timesteps)), desc='Sampling loop time step', total=schedule.timesteps):
+    for i in tqdm(reversed(range(0, int(schedule.timesteps))), desc='Sampling loop time step', total=int(schedule.timesteps)):
        
         # 현재 배치의 타임스텝 t 텐서 생성 (batch size만큼 같은 값)
         t = torch.full((b,), i, device=device, dtype=torch.long)
