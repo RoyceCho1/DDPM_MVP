@@ -43,7 +43,8 @@ class DDPM(nn.Module):
         self.register_buffer('timesteps', torch.tensor(_schedule.timesteps))
 
         for key, value in _schedule.__dict__.items():
-            self.register_buffer(key, value)
+            if torch.is_tensor(value):
+                self.register_buffer(key, value)
 
         # 구조 복원용 껍데기 저장
         self._schedule_struct = _schedule
