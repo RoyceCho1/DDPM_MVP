@@ -76,7 +76,7 @@ class DDPM(nn.Module):
         # 2. Loss Calculation
         # p_losses 내부에서 noise 주입(q_sample) 및 모델 예측 수행
         loss = p_losses(
-            model=self.model,
+            denoise_model=self.model,
             x_start=x,
             t=t,
             schedule=self.schedule,
