@@ -13,16 +13,22 @@ from diffusion.ddpm import DDPM
 from utils import setup_seed, save_images, EMA, prepare_logging
 
 def train(args):
-    # 1. Setup Device & Reproducibility
-    setup_seed(args.seed)
+    # ==========================================================================================
+    # 1. 초기 설정 (Setup)
+    # ==========================================================================================
+    setup_seed(args.seed) # 재현성을 위한 시드 고정
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🚀 Training on {device} with seed {args.seed}")
+    
     
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
         print(f"   - GPU: {torch.cuda.get_device_name(0)}")
 
-    # 2. Logging Setup
+    # ==========================================================================================
+    # 2. 로깅 및 저장 경로 설정 (Logging)
+    # ==========================================================================================
+    # results/실험이름/samples, results/실험이름/checkpoints 폴더 생성
     run_dir = os.path.join(args.result_dir, args.run_name)
     os.makedirs(run_dir, exist_ok=True)
     sample_dir = os.path.join(run_dir, 'samples')
@@ -32,7 +38,9 @@ def train(args):
     
     logger = prepare_logging(args.run_name)
     
-    # 3. Data Setup
+    # ==========================================================================================
+    # 3. 데이터 로드 (Data Loading)
+    # ==========================================================================================
     print("📚 Loading Dataset...")
     # dataset.py의 get_dataloader 사용 (다운로드 및 전처리 포함)
     dataloader = get_dataloader(
@@ -40,7 +48,8 @@ def train(args):
         num_workers=args.num_workers
     )
     
-    # Check Normalization (Safety)
+    # [Safety Check] 데이터가 [-1, 1] 범위로 잘 정규화되었는지 확인
+    # DDPM은 가우시안 노이즈(평균 0, 분산 1)를 다루므로 입력 데이터도 -1~1 범위여야 성능이 나옴
     sample_img, _ = next(iter(dataloader))
     if sample_img.min() < -1.1 or sample_img.max() > 1.1:
         print(f"⚠️ Warning: Data range seems off. Min: {sample_img.min():.2f}, Max: {sample_img.max():.2f}")
@@ -48,47 +57,54 @@ def train(args):
     else:
         print(f"✅ Data range verified: [{sample_img.min():.2f}, {sample_img.max():.2f}]")
 
-    # 4. Model Setup
+    # ==========================================================================================
+    # 4. 모델 및 최적화 설정 (Model & Optimizer)
+    # ==========================================================================================
     print("🏗️ Initializing Model...")
-    # Phase 1 Config (Base 64 channels)
+
     model = Unet(
-        dim=64,
-        channels=3,
-        dim_mults=(1, 2, 2, 4),
+        dim=64,                # 기본 채널 수
+        channels=3,            # RGB
+        dim_mults=(1, 2, 2, 4),# 채널 증폭 비율 (64 -> 128 -> 128 -> 256)
         with_time_emb=True
     ).to(device)
 
-    # DDPM Wrapper
+    # DDPM Wrapper(Scheduler & Loss Calculation)
     ddpm = DDPM(
         denoise_model=model,
         timesteps=args.timesteps,
         beta_start=args.beta_start,
         beta_end=args.beta_end,
-        loss_type='l2'
+        loss_type='l2'  #MSE Loss
     ).to(device)
     
-    # Optimizer
+    # Optimizer(AdamW가 Adam보다 weight decay가 더 효과적)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     
-    # EMA Setup (Optional)
+    # EMA (Exponential Moving Average)(Optional)
+    # 학습 중인 모델 파라미터의 이동 평균을 별도로 저장.
+    # 생성(Inference) 시에는 이 EMA 모델을 쓰는 것이 품질이 훨씬 좋음.
     ema: Optional[EMA] = None
     if args.use_ema:
         ema = EMA(model, beta=0.9999)
-        ema.register()
+        ema.register()  #현재 모델의 파라미터 상태를 EMA에 등록
         print("   - EMA Enabled (beta=0.9999)")
 
-    # Mixed Precision Setup
+    # Mixed Precision(AMP): 메모리 절약 및 속도 향상
     scaler = GradScaler(enabled=args.amp)
     if args.amp:
         print("   - Mixed Precision (AMP) Enabled")
 
-    # 5. Training Loop
+    # ==========================================================================================
+    # 5. 학습 루프 (Training Loop)
+    # ==========================================================================================
     global_step = 0
     total_steps = args.max_steps
     
     print(f"🏁 Starting Training for {total_steps} steps...")
     
     while global_step < total_steps:
+        # Dataloader는 epoch 단위로 돌리지만, DDPM은 step 단위로 제어
         for i, (images, _) in enumerate(dataloader):
             if global_step >= total_steps:
                 break
@@ -97,27 +113,30 @@ def train(args):
             
             images = images.to(device)
             
-            # Forward & Loss
+            # Forward Pass
+            # autocast: 연산에 따라 float16과 float32를 자동으로 섞어 쓴다
             with autocast(enabled=args.amp):
-                # DDPM forward handles sampling t and noise injection
+                # ddpm(images) -> p_losses() -> MSE(noise, pred_noise)
                 loss = ddpm(images)
             
             # Backward & Optimization
+            # scaler.scale: loss에 스케일을 곱해 underflow 방지
             scaler.scale(loss).backward()
             
-            # Gradient Clipping
+            # Gradient Clipping(안정적 학습 필수)
             if args.grad_clip > 0:
-                scaler.unscale_(optimizer)
+                scaler.unscale_(optimizer) # clipping 전 unscale
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             
+            # Optimizer step
             scaler.step(optimizer)
             scaler.update()
             
-            # EMA Update
+            # EMA Update : 매 스텝마다 조금씩 이동 평균 업데이트
             if ema is not None:
                 ema.update()
             
-            # Log
+            # Logging
             if global_step % args.log_interval == 0:
                 print(f"[Step {global_step}/{total_steps}] Loss: {loss.item():.4f}")
                 logger.info(f"Step {global_step} Loss: {loss.item():.4f}")
@@ -137,18 +156,19 @@ def train(args):
                 torch.save(save_dict, ckpt_path)
                 print(f"💾 Checkpoint saved: {ckpt_path}")
                 
-            # Periodic Sampling
+            # Sampling
             if global_step % args.sample_interval == 0 and global_step > 0:
                 print(f"✨ Sampling {args.num_samples} images at step {global_step}...")
                 
                 # EMA Model로 샘플링 (권장)
+                # 1. 현재 학습 중인 모델의 가중치를 ema 가중치로 잠시 교체
                 eval_model = model
                 if ema is not None:
                     ema.apply_shadow() # Apply EMA weights
                     
-                # Sample
+                # 2. 이미지 생성(Inference)
                 with torch.no_grad():
-                    # ddpm.sample 내부에서 p_sample_loop 호출 (tqdm 포함)
+                    # ddpm.sample 내부에서 p_sample_loop 호출 (tqdm 포함)(reverse process)
                     sampled_images = ddpm.sample(
                         shape=(args.num_samples, 3, 32, 32)
                     )
