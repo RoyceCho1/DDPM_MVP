@@ -13,29 +13,43 @@ class SinusoidalPositionEmbeddings(nn.Module):
         self.dim = dim
 
     def forward(self, time):
+        # 3) Safety: sinusoidal input requires float
+        time = time.float()
         device = time.device
+        
+        # 2) Safety: dim must be even for sin/cos split
         half_dim = self.dim // 2
+        
         embeddings = math.log(10000) / (half_dim - 1)
         embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
         embeddings = time[:, None] * embeddings[None, :]
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
         return embeddings
 
+def safe_groups(ch, max_groups=32):
+    """
+    1) Safety: Find the largest divisor of 'ch' <= 'max_groups'
+    This prevents Runtime Error when (ch % groups != 0)
+    """
+    g = min(max_groups, ch)
+    while ch % g != 0:
+        g //= 2
+    return max(g, 1)
+
 class Block(nn.Module):
     """
-    기본적인 Conv Block: Conv -> GroupNorm -> SiLU
+    기본적인 Conv Block: GroupNorm -> SiLU -> Conv (Pre-activation)
     """
     def __init__(self, dim, dim_out, groups=32):
         super().__init__()
-        self.proj = nn.Conv2d(dim, dim_out, 3, padding=1)
-        # Safe GroupNorm: 채널 수가 32보다 작을 경우를 대비
-        self.norm = nn.GroupNorm(min(groups, dim_out), dim_out)
+        self.norm = nn.GroupNorm(safe_groups(dim, groups), dim)
         self.act = nn.SiLU()
+        self.proj = nn.Conv2d(dim, dim_out, 3, padding=1)
 
     def forward(self, x):
-        x = self.proj(x)
         x = self.norm(x)
         x = self.act(x)
+        x = self.proj(x)
         return x
 
 class ResnetBlock(nn.Module):
@@ -98,102 +112,20 @@ class Upsample(nn.Module):
         x = F.interpolate(x, scale_factor=2, mode="nearest")
         return self.conv(x)
 
+def default(val, d):
+    """
+    유틸리티 함수: val이 None이면 d를 반환
+    """
+    if val is not None:
+        return val
+    return d
+
 class Unet(nn.Module):
     """
     Phase 1 U-Net (No Attention)
     - Base Channels: 64
     - Channel Mults: 1, 2, 2, 4
     """
-    def __init__(
-        self,
-        dim=64,
-        init_dim=None,
-        out_dim=None,
-        dim_mults=(1, 2, 2, 4),
-        channels=3,
-        with_time_emb=True
-    ):
-        super().__init__()
-        self.channels = channels
-        
-        init_dim = default(init_dim, dim)
-        self.init_conv = nn.Conv2d(channels, init_dim, 7, padding=3)
-
-        dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
-        in_out = list(zip(dims[:-1], dims[1:])) # [(64, 64), (64, 128), (128, 128), (128, 256)]
-
-        # Time Embeddings
-        if with_time_emb:
-            time_dim = dim * 4
-            self.time_mlp = nn.Sequential(
-                SinusoidalPositionEmbeddings(dim),
-                nn.Linear(dim, time_dim),
-                nn.GELU(),
-                nn.Linear(time_dim, time_dim)
-            )
-        else:
-            time_dim = None
-            self.time_mlp = None
-
-        self.downs = nn.ModuleList([])
-        self.ups = nn.ModuleList([])
-        num_resolutions = len(in_out)
-
-        # Down Sampling
-        now_dim = init_dim
-        
-        for i, (dim_in, dim_out) in enumerate(in_out):
-            is_last = i >= (num_resolutions - 1)
-            
-            self.downs.append(nn.ModuleList([
-                ResnetBlock(dim_in, dim_out, time_emb_dim=time_dim),
-                ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
-                Downsample(dim_out) if not is_last else nn.Identity()
-            ]))
-
-        # Skip connection 때문에 채널 수가 늘어남을 대비할 중간 변수
-        mid_dim = dims[-1]
-        self.mid_block1 = ResnetBlock(mid_dim, mid_dim, time_emb_dim=time_dim)
-        self.mid_block2 = ResnetBlock(mid_dim, mid_dim, time_emb_dim=time_dim)
-
-        # Up Sampling
-        for i, (dim_in, dim_out) in enumerate(reversed(in_out)):
-            is_last = i >= (num_resolutions - 1)
-
-            # Skip connection concate으로 인해 입력 채널은 dim_out * 2 (혹은 설계따라 다름)
-            # 여기서는 (dim_out + dim_in) -> dim_in 으로 가는 구조.
-            # Upsample의 dims 리스트는 Down의 역순. 
-            # Down: 64->64, 64->128, 128->128, 128->256
-            # Up:   256->128, 128->128, 128->64, 64->64
-            
-            # 정확한 채널 매칭을 위해 Down block의 출력 채널을 잘 봐야 함.
-            # Decoder의 입력은 (현재 레벨의 Up 채널) + (Encoder에서 넘어온 Skip 채널)
-            # Encoder [64, 128, 128, 256] (각 단계 출력)
-            
-            # 여기서 dim_in은 원래 Down의 입력, dim_out은 출력.
-            # Up에서는 dim_out(Down의 출력)이 입력이 되고 dim_in(Down의 입력)으로 복원해야 함.
-            # reversed in_out: (128, 256), (128, 128), (64, 128), (64, 64) ?? 아니지.
-            # in_out        : (64, 64), (64, 128), (128, 128), (128, 256)
-            # reversed      : (128, 256), (128, 128), (64, 128), (64, 64)
-            # Up Loop       : i=0. in=128, out=256 ??
-            # 구조적으로 [Input] -> [Enc1] -> [Enc2] -> [Mid] -> [Dec2(+Enc2)] -> [Dec1(+Enc1)] -> Output
-            
-            # 통상적인 U-Net:
-            # Enc: C -> C1 -> C2 -> C3
-            # Mid: C3 -> C3
-            # Dec: C3 + C3(Skip) -> C2 ...
-            
-            # 간단하게 다시 짭니다.
-            pass
-
-        # 편의를 위해 다시 작성.
-        
-def default(val, d):
-    if val is not None:
-        return val
-    return d
-
-class Unet(nn.Module):
     def __init__(
         self,
         dim=64,
@@ -217,7 +149,7 @@ class Unet(nn.Module):
             self.time_mlp = nn.Sequential(
                 SinusoidalPositionEmbeddings(dim),
                 nn.Linear(dim, time_dim),
-                nn.GELU(),
+                nn.SiLU(),
                 nn.Linear(time_dim, time_dim)
             )
         else:
@@ -241,17 +173,7 @@ class Unet(nn.Module):
                 ResnetBlock(dim_in, dim_out, time_emb_dim=time_dim),
                 ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
                 Downsample(dim_out) if not is_last else nn.Identity()
-                # Downsample을 하면 채널은 유지하고 H,W만 줄임 (여기 구현상)
-                # 만약 Downsample에서 채널을 늘리는 구조라면 수정 필요.
-                # 위 Downsample 클래스는 dim -> dim 임.
             ]))
-            
-            # Skip connection은 ResBlock을 통과한 후의 feature map들.
-            # 모델 forward시 2개의 아웃풋이 나옴 (block1후? block2후?)
-            # 보통 각 Down stage의 최종 출력을 skip으로 씀.
-            # 여기선 block2 후, downsample 전의 값을 skip으로 쓴다고 가정.
-            # 그러면 skip 채널은 dim_out.
-            # 마지막 layer(is_last)는 downsample이 identity이므로 그대로.
             
             skip_dims.append(dim_out)
             cur_dim = dim_out
@@ -261,44 +183,19 @@ class Unet(nn.Module):
         self.mid_block2 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
 
         # Up Path
-        # Down의 역순.
-        # in_out reversed: [(128, 256), (128, 128), (64, 128), (64, 64)]
-        # 근데 Upsample은 (현재 차원 + 스킵 차원) -> (목표 차원) 이어야 함.
-        
         skip_dims_reversed = list(reversed(skip_dims))
         
-        # in_out을 그냥 쓰기보다는 dims를 보고 판단하는게 나음.
-        # dims: [64, 64, 128, 128, 256]
-        # Up Process: 256 -> 128 -> 128 -> 64 -> 64 ...
-        
-        # Up stage 입력: (직전 Up 결과) + (Down에서의 Skip)
-        # 직전 Up 결과 채널: dim_out (이전 루프의)
-        # Skip 채널: skip_dims_reversed[i]
-        
         for i, (dim_in, dim_out) in enumerate(reversed(in_out)):
-            # dim_in: 128, dim_out: 256 (from reversed in_out) -> 이건 아님.
-            # Down이 A->B 였다면 Up은 (B+B) -> A 가 되어야 함 (Concatenation)
-            # B (From main path) + B (From skip path) = 2B -> A
-            
-            # 정확히 역순으로 가야함.
-            # Down Levels:
-            # 0: 64 -> 64
-            # 1: 64 -> 128
-            # 2: 128 -> 128
-            # 3: 128 -> 256
-            
-            # Up Levels:
-            # 0: 256 + 256(Skip 3) -> 128 (매칭되는 Down 3의 입력) 
-            # 1: 128 + 128(Skip 2) -> 128
-            # 2: 128 + 128(Skip 1) -> 64
-            # 3: 64 + 64(Skip 0) -> 64
+            # Up stage 입력: (직전 Up 결과) + (Down에서의 Skip)
+            # 여기의 dim_in은 사실 이전 단계의 dim_out (작은 채널)
+            # dim_out은 더 큰 채널 (Down의 입력이었던 것)
+            # 하지만 변수명이 reversed(in_out)이라 의미가 반대임.
+            # dim_in: 128, dim_out: 256 (위 예시 기준)
+            # 우리가 원하는건 256 -> 128.
+            # 정확히는 (256 + 256) -> 128
             
             is_last = i >= (num_resolutions - 1)
-            
-            # Down Stage i: In(dim_in) -> Out(dim_out)
-            # Up Stage i: In(dim_out) + Skip(dim_out) -> Out(dim_in)
-            
-            skip_dim = skip_dims_reversed[i] # dim_out과 같음
+            skip_dim = skip_dims_reversed[i] # dim_out 과 동일
             
             self.ups.append(nn.ModuleList([
                 ResnetBlock(dim_out + skip_dim, dim_in, time_emb_dim=time_dim),
