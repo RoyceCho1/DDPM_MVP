@@ -1,7 +1,10 @@
+import math
 import argparse
 import os
+import logging
 import torch
 import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from typing import Optional
@@ -12,6 +15,17 @@ from model import Unet
 from diffusion.ddpm import DDPM
 from utils import setup_seed, save_images, EMA, prepare_logging
 
+def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
+    """
+    Linear Warmup + Cosine Annealing LR Scheduler
+    """
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    return LambdaLR(optimizer, lr_lambda)
+
 def train(args):
     # ==========================================================================================
     # 1. 초기 설정 (Setup)
@@ -19,7 +33,6 @@ def train(args):
     setup_seed(args.seed) # 재현성을 위한 시드 고정
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🚀 Training on {device} with seed {args.seed}")
-    
     
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
@@ -29,15 +42,24 @@ def train(args):
     # 2. 로깅 및 저장 경로 설정 (Logging)
     # ==========================================================================================
     # results/실험이름/samples, results/실험이름/checkpoints 폴더 생성
-    run_dir = os.path.join(args.result_dir, args.run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    sample_dir = os.path.join(run_dir, 'samples')
-    ckpt_dir = os.path.join(run_dir, 'checkpoints')
-    os.makedirs(sample_dir, exist_ok=True)
-    os.makedirs(ckpt_dir, exist_ok=True)
-    
     logger = prepare_logging(args.run_name)
     
+    # We reconstruct the path based on assumption (or user should manually verify unique names)
+    # Using the logger's file handler to find the actual directory is a robust way if available.
+    if logger.handlers:
+        run_file = logger.handlers[0].baseFilename
+        run_dir = os.path.dirname(run_file)
+    else:
+        # Fallback if unconfigured (unlikely with prepare_logging)
+        run_dir = os.path.join("results", args.run_name)
+        
+    ckpt_dir = os.path.join(run_dir, "checkpoints")
+    sample_dir = os.path.join(run_dir, "images")
+    
+    # ensure directories exist (redundant but safe)
+    os.makedirs(ckpt_dir, exist_ok=True)
+    os.makedirs(sample_dir, exist_ok=True)
+
     # ==========================================================================================
     # 3. 데이터 로드 (Data Loading)
     # ==========================================================================================
@@ -53,7 +75,6 @@ def train(args):
     sample_img, _ = next(iter(dataloader))
     if sample_img.min() < -1.1 or sample_img.max() > 1.1:
         print(f"⚠️ Warning: Data range seems off. Min: {sample_img.min():.2f}, Max: {sample_img.max():.2f}")
-        print("   - Expected range: [-1, 1]")
     else:
         print(f"✅ Data range verified: [{sample_img.min():.2f}, {sample_img.max():.2f}]")
 
@@ -61,7 +82,6 @@ def train(args):
     # 4. 모델 및 최적화 설정 (Model & Optimizer)
     # ==========================================================================================
     print("🏗️ Initializing Model...")
-
     model = Unet(
         dim=64,                # 기본 채널 수
         channels=3,            # RGB
@@ -69,7 +89,7 @@ def train(args):
         with_time_emb=True
     ).to(device)
 
-    # DDPM Wrapper(Scheduler & Loss Calculation)
+    # DDPM Wrapper
     ddpm = DDPM(
         denoise_model=model,
         timesteps=args.timesteps,
@@ -78,9 +98,16 @@ def train(args):
         loss_type='l2'  #MSE Loss
     ).to(device)
     
-    # Optimizer(AdamW가 Adam보다 weight decay가 더 효과적)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    # Optimizer (Use ddpm.parameters for safety)
+    optimizer = optim.AdamW(ddpm.parameters(), lr=args.lr)
     
+    # LR Scheduler (Warmup + Cosine)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer, 
+        warmup_steps=args.warmup_steps, 
+        total_steps=args.max_steps
+    )
+
     # EMA (Exponential Moving Average)(Optional)
     # 학습 중인 모델 파라미터의 이동 평균을 별도로 저장.
     # 생성(Inference) 시에는 이 EMA 모델을 쓰는 것이 품질이 훨씬 좋음.
@@ -103,47 +130,56 @@ def train(args):
     
     print(f"🏁 Starting Training for {total_steps} steps...")
     
+    ddpm.train() # Explicit Train Mode
+
     while global_step < total_steps:
         # Dataloader는 epoch 단위로 돌리지만, DDPM은 step 단위로 제어
         for i, (images, _) in enumerate(dataloader):
             if global_step >= total_steps:
                 break
             
-            optimizer.zero_grad()
+            # Efficient Zero Grad
+            optimizer.zero_grad(set_to_none=True)
             
             images = images.to(device)
             
-            # Forward Pass
-            # autocast: 연산에 따라 float16과 float32를 자동으로 섞어 쓴다
+            # Forward & Loss
             with autocast(enabled=args.amp):
-                # ddpm(images) -> p_losses() -> MSE(noise, pred_noise)
                 loss = ddpm(images)
             
+            # Loss Check (NaN/Inf)
+            if not torch.isfinite(loss):
+                print(f"⚠️ Warning: Loss is {loss.item()} at step {global_step}. Skipping step.")
+                scaler.update() 
+                continue
+
             # Backward & Optimization
-            # scaler.scale: loss에 스케일을 곱해 underflow 방지
             scaler.scale(loss).backward()
             
-            # Gradient Clipping(안정적 학습 필수)
+            # Gradient Clipping
             if args.grad_clip > 0:
-                scaler.unscale_(optimizer) # clipping 전 unscale
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.unscale_(optimizer)
+                # Use ddpm.parameters()
+                torch.nn.utils.clip_grad_norm_(ddpm.parameters(), args.grad_clip)
             
-            # Optimizer step
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step() # Update LR
             
-            # EMA Update : 매 스텝마다 조금씩 이동 평균 업데이트
+            # EMA Update
             if ema is not None:
                 ema.update()
             
-            # Logging
+            # Log
             if global_step % args.log_interval == 0:
-                print(f"[Step {global_step}/{total_steps}] Loss: {loss.item():.4f}")
-                logger.info(f"Step {global_step} Loss: {loss.item():.4f}")
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"[Step {global_step}/{total_steps}] Loss: {loss.item():.4f} | LR: {current_lr:.6f}")
+                logger.info(f"Step {global_step} Loss: {loss.item():.4f} LR: {current_lr:.6f}")
             
             # Save Checkpoint
             if global_step % args.save_interval == 0 and global_step > 0:
-                ckpt_path = os.path.join(ckpt_dir, f"ckpt_step_{global_step}.pt")
+                save_path = os.path.join(ckpt_dir, f"ckpt_step_{global_step}.pt")
+                
                 save_dict = {
                     'step': global_step,
                     'model_state_dict': model.state_dict(),
@@ -151,42 +187,37 @@ def train(args):
                     'args': args
                 }
                 if ema is not None:
-                    save_dict['ema_state_dict'] = ema.shadow
+                    save_dict['ema_state_dict'] = ema.state_dict()
                 
-                torch.save(save_dict, ckpt_path)
-                print(f"💾 Checkpoint saved: {ckpt_path}")
+                torch.save(save_dict, save_path)
+                print(f"💾 Checkpoint saved: {save_path}")
                 
             # Sampling
             if global_step % args.sample_interval == 0 and global_step > 0:
                 print(f"✨ Sampling {args.num_samples} images at step {global_step}...")
                 
-                # EMA Model로 샘플링 (권장)
-                # 1. 현재 학습 중인 모델의 가중치를 ema 가중치로 잠시 교체
-                eval_model = model
+                # Eval Mode
+                ddpm.eval()
+                
                 if ema is not None:
-                    ema.apply_shadow() # Apply EMA weights
+                    ema.apply_shadow()
                     
-                # 2. 이미지 생성(Inference)
                 with torch.no_grad():
-                    # ddpm.sample 내부에서 p_sample_loop 호출 (tqdm 포함)(reverse process)
                     sampled_images = ddpm.sample(
                         shape=(args.num_samples, 3, 32, 32)
                     )
                 
-                # Save Image
-                save_path = os.path.join(sample_dir, f"sample_step_{global_step}.png")
-                # [-1, 1] -> [0, 1] 변환은 save_images 내부에서 처리하거나 여기서 처리
-                # utils.save_images가 (B, C, H, W)를 받아 저장한다고 가정 (보통 0~1 or -1~1 예상)
-                # 여기서는 명시적으로 [0, 1]로 변환하여 넘기는 것이 안전
-                sampled_images = (sampled_images + 1) * 0.5
-                sampled_images = torch.clamp(sampled_images, 0, 1)
-                
-                save_images(sampled_images, save_path)
-                print(f"🖼️ Sample saved: {save_path}")
-                
-                # EMA 복원
+                # Undo EMA
                 if ema is not None:
                     ema.restore()
+                
+                ddpm.train() # Restore Train Mode
+
+                # Save Image
+                # Pass [-1, 1] directly to utils.save_images
+                save_path = os.path.join(sample_dir, f"sample_step_{global_step}.png")
+                save_images(sampled_images, save_path) 
+                print(f"🖼️ Sample saved: {save_path}")
             
             global_step += 1
             
@@ -198,8 +229,6 @@ def train(args):
         'optimizer_state_dict': optimizer.state_dict(),
         'args': args
     }
-    if ema is not None:
-        save_dict['ema_state_dict'] = ema.shadow
     torch.save(save_dict, final_ckpt_path)
     print("🏆 Training Complete!")
 
@@ -211,6 +240,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_steps', type=int, default=800000, help='Total training steps')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
+    parser.add_argument('--warmup_steps', type=int, default=5000, help='Warmup steps')
     
     # DDPM Hyperparameters
     parser.add_argument('--timesteps', type=int, default=1000, help='Diffusion timesteps')
@@ -226,14 +256,13 @@ if __name__ == '__main__':
     # Logging & Saving
     parser.add_argument('--result_dir', type=str, default='./results')
     parser.add_argument('--log_interval', type=int, default=100, help='Log loss every N steps')
-    parser.add_argument('--save_interval', type=int, default=5000, help='Save checkpoint every N steps')
-    parser.add_argument('--sample_interval', type=int, default=2000, help='Sample images every N steps')
+    parser.add_argument('--save_interval', type=int, default=10000, help='Save checkpoint every N steps')
+    parser.add_argument('--sample_interval', type=int, default=10000, help='Sample images every N steps')
     parser.add_argument('--num_samples', type=int, default=16, help='Number of images to sample')
     parser.add_argument('--num_workers', type=int, default=4, help='DataLoader workers')
 
     args = parser.parse_args()
     
-    # Boolean parsing correction
     args.use_ema = args.use_ema.lower() == 'true'
     
     train(args)
