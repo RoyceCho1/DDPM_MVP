@@ -1,4 +1,5 @@
 import os
+import logging
 import random
 import torch
 import numpy as np
@@ -61,7 +62,7 @@ class EMA:
                 self.shadow[name] = param.data.clone()
                 
     def update(self):
-"""
+        """
         [Step Update]
         매 학습 스텝마다 호출되어 이동 평균을 업데이트.
         Formula: V_t = beta * V_{t-1} + (1 - beta) * theta_t

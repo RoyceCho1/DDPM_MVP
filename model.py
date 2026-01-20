@@ -172,7 +172,7 @@ class Unet(nn.Module):
         self.channels = channels
         
         init_dim = default(init_dim, dim)
-
+        
         # 초기 이미지 특징 추출 (RGB -> Hidden Channels)
         # CIFAR-10 (32x32)에는 3x3 커널이 더 적합합니다. (7x7은 ImageNet용)
         self.init_conv = nn.Conv2d(channels, init_dim, 3, padding=1)
@@ -230,28 +230,29 @@ class Unet(nn.Module):
 
         # ----------------------------------------------------------------------
         # 3. Decoder (Up Path) 구성
+        # [수정] 구조 변경: Upsample -> Concat -> ResBlocks
         # ----------------------------------------------------------------------
         skip_dims_reversed = list(reversed(skip_dims))
         
         for i, (dim_in, dim_out) in enumerate(reversed(in_out)):
-            is_last = i >= (num_resolutions - 1)
-            # encoder에서 가져올 skip connection의 채널 수
+            is_last = i >= (num_resolutions - 1) 
+            need_upsample = i > 0
+            
             skip_dim = skip_dims_reversed[i]
             
-            # decoder의 입력 채널 = (이전 레이어 출력) + (skip connection)
-            # dim_out: 이전 layer에서 올라온 channel(변수명이 reversed라 반대임을 주의)
-            # skip_dim: encoder에서 가져온 skip connection의 channel
+            # dim_out: 현재 레벨의 입력 채널 (Encoder의 dim_out, 여기선 입력으로 씀)
+            # dim_in: 목표 출력 채널
+            
             self.ups.append(nn.ModuleList([
+                Upsample(dim_out) if need_upsample else nn.Identity(),
                 ResnetBlock(dim_out + skip_dim, dim_in, time_emb_dim=time_dim),
-                ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim),
-                # 마지막 level이 아니면 upsample 적용, 마지막 level은 identity
-                Upsample(dim_in) if not is_last else nn.Identity()
+                ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim)
             ]))
             
         self.out_dim = default(out_dim, channels)
-        # ----------------------------------------------------------------------
-        # 4. Final Projection
-        # ----------------------------------------------------------------------
+        
+        # [수정] 마지막 Block과 Conv는 init_dim (보통 dim과 같음)을 안전하게 사용
+        # 사용자 요청: dim 사용 (init_dim == dim 가정 시 안전)
         self.final_res_block = ResnetBlock(init_dim, init_dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
@@ -259,7 +260,7 @@ class Unet(nn.Module):
     def forward(self, x, time):
         # 1. initial convolution
         x = self.init_conv(x)
-        r = x.clone()
+        
         
         # 2. time embedding
         t = self.time_mlp(time) if self.time_mlp is not None else None
@@ -277,15 +278,19 @@ class Unet(nn.Module):
         x = self.mid_block2(x, t)
         
         # 5. Up path(decoder)
-        for block1, block2, upsample in self.ups:
-            # encoder에서 저장해준 feature map 가져오기(pop)
+        # [수정] 순서 변경: Upsample -> Concat -> ResBlocks
+        for upsample, block1, block2 in self.ups:
+            # 1) Upsample (Resolution 복원)
+            x = upsample(x)
+            
+            # 2) Concat (Skip connection 결합)
             skip = h.pop()
             # channel dimension(dim=1)로 결합(concatenate)
             x = torch.cat((x, skip), dim=1)
             
+            # 3) ResBlocks
             x = block1(x, t)
             x = block2(x, t)
-            x = upsample(x)
             
         # 6. Final output (noise prediction)
         x = self.final_res_block(x, t)
