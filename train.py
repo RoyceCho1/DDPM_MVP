@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from typing import Optional
 
-# Custom Modules
 from dataset import get_dataloader
 from model import Unet
 from diffusion.ddpm import DDPM
@@ -40,19 +39,15 @@ def train(args):
     # results/실험이름/samples, results/실험이름/checkpoints 폴더 생성
     logger = prepare_logging(args.run_name)
     
-    # We reconstruct the path based on assumption (or user should manually verify unique names)
-    # Using the logger's file handler to find the actual directory is a robust way if available.
     if logger.handlers:
         run_file = logger.handlers[0].baseFilename
         run_dir = os.path.dirname(run_file)
     else:
-        # Fallback if unconfigured (unlikely with prepare_logging)
         run_dir = os.path.join("results", args.run_name)
         
     ckpt_dir = os.path.join(run_dir, "checkpoints")
     sample_dir = os.path.join(run_dir, "images")
     
-    # ensure directories exist (redundant but safe)
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(sample_dir, exist_ok=True)
 
