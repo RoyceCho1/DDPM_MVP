@@ -48,6 +48,10 @@ def plot_loss(steps, losses, output_path, window_size=100):
     """
     plt.figure(figsize=(12, 6))
     
+    # Ensure inputs are numpy arrays
+    steps = np.array(steps)
+    losses = np.array(losses)
+
     # Plot raw data with high transparency
     plt.plot(steps, losses, alpha=0.3, label='Raw Loss', color='gray', linewidth=0.5)
 
