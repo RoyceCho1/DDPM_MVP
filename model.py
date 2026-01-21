@@ -136,6 +136,53 @@ class Upsample(nn.Module):
         x = F.interpolate(x, scale_factor=2, mode="nearest")
         return self.conv(x)
 
+class LinearAttention(nn.Module):
+    """
+    [Linear Attention] O(N) Complexity
+    Standard Attention: O(N^2) (Ex: 32x32=1024 -> 1024^2=1M matrix)
+    Linear Attention: O(N) using einsum and kernel trick (softmax on keys).
+    Efficient for larger resolutions.
+    """
+    def __init__(self, dim, heads=4, dim_head=32):
+        super().__init__()
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+        hidden_dim = dim_head * heads
+        
+        self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
+        self.to_out = nn.Sequential(
+            nn.Conv2d(hidden_dim, dim, 1),
+            nn.GroupNorm(1, dim) # LayerNorm equivalent for images
+        )
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        # qkv: (b, 3*hidden_dim, h, w)
+        qkv = self.to_qkv(x).chunk(3, dim=1)
+        
+        # Split heads and flatten: (b, heads, c, h*w)
+        q, k, v = map(lambda t: t.view(b, self.heads, -1, h * w), qkv)
+
+        # Apply softmax to Q and K (Kernel Trick for Linear Attention)
+        q = q.softmax(dim=-2)
+        k = k.softmax(dim=-1)
+
+        # Optimize scaling mechanism
+        q = q * self.scale
+        
+        # Context computation: (heads, c_out, N) * (heads, N, c_in) -> (heads, c_out, c_in)
+        # This is the O(N) part: aggregated context vector
+        context = torch.einsum('b h d n, b h e n -> b h d e', k, v)
+
+        # Look up context: (heads, c_in, N) * (heads, c_out, c_in) -> (heads, c_out, N)
+        out = torch.einsum('b h d e, b h d n -> b h e n', context, q)
+        
+        # Reconstruct spatial dimensions: (b, heads*c, h, w)
+        out = out.reshape(b, -1, h, w)
+        
+        # Final projection and residual connection
+        return self.to_out(out) + x
+
 
 def default(val, d):
     """
@@ -203,11 +250,32 @@ class Unet(nn.Module):
         for i, (dim_in, dim_out) in enumerate(in_out):
             is_last = i >= (num_resolutions - 1)
             
-            # 각 레벨 : ResBlock -> ResBlock -> Downsample
+            # 각 레벨 : ResBlock -> ResBlock -> Attention(Optional) -> Downsample
+            # Resolution logic: 
+            # i=0: 32x32 (Not applied)
+            # i=1: 16x16 (Applied)
+            # i=2: 8x8 (Applied) or 16x16 only?
+            # DDPM Paper applies attention at 16x16 resolution. 
+            # Assuming input is 32x32:
+            # i=0 (32->32), i=1 (32->16 - Downsample happens at END of block i=0? No.
+            # Downsample is at the end of the block loop. 
+            # Resolution is `32 / (2^i)`? No, `in_out` doesn't track resolution directly.
+            # If we assume standard 32x32 input:
+            # i=0: ResBlock(32x32), Down(32->16) -> Next start 16x16
+            # i=1: ResBlock(16x16), Attention(Here), Down(16->8)
+            # i=2: ResBlock(8x8), Attention(Optional), Down(8->4)
+            # Let's apply attention if ds (downsample factor) is 16.
+            # But we don't track ds. 
+            # We can use `dim_out` as proxy or index `i`.
+            # dim_mults=(1, 2, 2, 4) -> (64, 128, 128, 256)
+            # i=1 corresponds to 128ch (16x16). 
+            
+            use_attn = (i == 1) # Apply at 16x16 resolution phase
+            
             self.downs.append(nn.ModuleList([
                 ResnetBlock(dim_in, dim_out, time_emb_dim=time_dim),
                 ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
-                # 마지막 레벨이 아니면 downsample 적용, 마지막 레벨은 identity
+                LinearAttention(dim_out) if use_attn else nn.Identity(),
                 Downsample(dim_out) if not is_last else nn.Identity()
             ]))
             
@@ -217,27 +285,37 @@ class Unet(nn.Module):
 
         # 2. Bottleneck (Middle Path) 구성
         # 가장 깊은 곳에서 Global한 특징을 정제
-        # Attention이 들어간다면 보통 여기에 추가됨
         self.mid_block1 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
+        self.mid_attn = LinearAttention(cur_dim)
         self.mid_block2 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
 
         # 3. Decoder (Up Path) 구성
         # 구조: Upsample -> Concat -> ResBlocks
         skip_dims_reversed = list(reversed(skip_dims))
         
-        for i, (dim_in, dim_out) in enumerate(reversed(in_out)):
-            is_last = i >= (num_resolutions - 1) 
-            need_upsample = i > 0
+            # i matches reversed in_out. 
+            # i=0 (corresponds to last encoder block, smallest resolution 4x4)
+            # i=1 (8x8)
+            # i=2 (16x16) -> Apply Attention here?
+            # Encoder i=1 was 16x16.
+            # Reversed: [256, 128, 128, 64]
+            # i=0: 256->128 (4x4 -> 8x8 Upsample)
+            # i=1: 128->128 (8x8 -> 16x16 Upsample)
+            # i=2: 128->64 (16x16 -> 32x32 Upsample)
+            # We want attention AT 16x16 resolution.
+            # Upsample creates the resolution for the NEXT block.
+            # Upsample logic:
+            # i=0: Input(4x4), Upsample(8x8), ResBlock(8x8)
+            # i=1: Input(8x8), Upsample(16x16), ResBlock(16x16), ATTENTION(16x16)
+            # i=2: Input(16x16), Upsample(32x32), ResBlock(32x32)
             
-            skip_dim = skip_dims_reversed[i]
-            
-            # dim_out: 현재 레벨의 입력 채널 (Encoder의 dim_out, 여기선 입력으로 씀)
-            # dim_in: 목표 출력 채널
+            use_attn = (i == 1) # Matches 16x16 resolution after upsampling
             
             self.ups.append(nn.ModuleList([
                 Upsample(dim_out) if need_upsample else nn.Identity(),
                 ResnetBlock(dim_out + skip_dim, dim_in, time_emb_dim=time_dim),
-                ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim)
+                ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim),
+                LinearAttention(dim_in) if use_attn else nn.Identity()
             ]))
             
         self.out_dim = default(out_dim, channels)
@@ -258,19 +336,21 @@ class Unet(nn.Module):
         
         # 3. down path(encoder)
         h = []
-        for block1, block2, downsample in self.downs:
+        for block1, block2, attn, downsample in self.downs:
             x = block1(x, t)
             x = block2(x, t)
+            x = attn(x)
             h.append(x) # Skip connection 저장(현재 resolution의 feature map)
             x = downsample(x)
             
         # 4. Mid path(bottleneck)
         x = self.mid_block1(x, t)
+        x = self.mid_attn(x)
         x = self.mid_block2(x, t)
         
         # 5. Up path(decoder)
         # [수정] 순서 변경: Upsample -> Concat -> ResBlocks
-        for upsample, block1, block2 in self.ups:
+        for upsample, block1, block2, attn in self.ups:
             # 1) Upsample (Resolution 복원)
             x = upsample(x)
             
@@ -282,6 +362,9 @@ class Unet(nn.Module):
             # 3) ResBlocks
             x = block1(x, t)
             x = block2(x, t)
+            
+            # 4) Attention
+            x = attn(x)
             
         # 6. Final output (noise prediction)
         x = self.final_res_block(x, t)
