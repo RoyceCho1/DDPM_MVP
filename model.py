@@ -293,6 +293,12 @@ class Unet(nn.Module):
         # 구조: Upsample -> Concat -> ResBlocks
         skip_dims_reversed = list(reversed(skip_dims))
         
+        for i, (dim_in, dim_out) in enumerate(reversed(in_out)):
+            is_last = i >= (num_resolutions - 1) 
+            need_upsample = i > 0
+            
+            skip_dim = skip_dims_reversed[i]
+            
             # i matches reversed in_out. 
             # i=0 (corresponds to last encoder block, smallest resolution 4x4)
             # i=1 (8x8)
