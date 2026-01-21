@@ -1,6 +1,8 @@
 import argparse
 import os
 import re
+import matplotlib
+matplotlib.use('Agg') # Server-side plotting backend
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -38,9 +40,9 @@ def analyze_log(log_path):
         print("No valid log entries found.")
         return
 
-    steps = np.array(steps)
-    losses = np.array(losses)
-    lrs = np.array(lrs)
+    steps = np.array(steps, dtype=np.float32)
+    losses = np.array(losses, dtype=np.float32)
+    lrs = np.array(lrs, dtype=np.float32)
 
     
     # 3. 통계 분석
@@ -48,7 +50,7 @@ def analyze_log(log_path):
     min_step = steps[np.argmin(losses)]     # 최소 Loss가 발생한 지점(Step)
     final_loss = losses[-1]                 # 마지막 Loss 값
     
-    print("\n📊 Training Statistics:")
+    print("\nTraining Statistics:")
     print(f"   - Total Steps Logged: {len(steps)}")
     print(f"   - Final Step: {steps[-1]}")
     print(f"   - Best Loss: {min_loss:.6f} (at step {min_step})")
@@ -87,7 +89,7 @@ def analyze_log(log_path):
     
     plt.tight_layout()
     plt.savefig(save_path)
-    print(f"\n📈 Saved analysis plot to: {save_path}")
+    print(f"\nSaved analysis plot to: {save_path}")
     print("   (Check this image to see stability and convergence)")
 
 if __name__ == "__main__":
