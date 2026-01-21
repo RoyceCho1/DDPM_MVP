@@ -40,9 +40,10 @@ def analyze_log(log_path):
         print("No valid log entries found.")
         return
 
-    steps = np.array(steps, dtype=np.float32)
-    losses = np.array(losses, dtype=np.float32)
-    lrs = np.array(lrs, dtype=np.float32)
+    # Enforce standard float64 to ensure compatibility
+    steps = np.array(steps, dtype=np.float64)
+    losses = np.array(losses, dtype=np.float64)
+    lrs = np.array(lrs, dtype=np.float64)
 
     
     # 3. 통계 분석
@@ -50,10 +51,10 @@ def analyze_log(log_path):
     min_step = steps[np.argmin(losses)]     # 최소 Loss가 발생한 지점(Step)
     final_loss = losses[-1]                 # 마지막 Loss 값
     
-    print("\nTraining Statistics:")
+    print("\n📊 Training Statistics:")
     print(f"   - Total Steps Logged: {len(steps)}")
-    print(f"   - Final Step: {steps[-1]}")
-    print(f"   - Best Loss: {min_loss:.6f} (at step {min_step})")
+    print(f"   - Final Step: {int(steps[-1])}")
+    print(f"   - Best Loss: {min_loss:.6f} (at step {int(min_step)})")
     print(f"   - Final Loss: {final_loss:.6f}")
     
     # 4. Plotting
@@ -63,7 +64,8 @@ def analyze_log(log_path):
     # Loss Curve
     plt.subplot(2, 1, 1)
     # Raw Loss: 실제 변동을 보여주는 흐린 선
-    plt.plot(steps, losses, alpha=0.3, color='blue', label='Raw Loss')
+    # Safe Plotting: Convert to python list to avoid casting issues in matplotlib backend
+    plt.plot(steps.tolist(), losses.tolist(), alpha=0.3, color='blue', label='Raw Loss')
     
     # Smooth Curve: Moving average를 계산하여 추세를 보여주는 선
     # Window 크기: 5 또는 데이터의 5% 중 큰 값
@@ -71,7 +73,7 @@ def analyze_log(log_path):
     if len(losses) > window:
         smooth_loss = np.convolve(losses, np.ones(window)/window, mode='valid')
         smooth_steps = steps[window-1:]
-        plt.plot(smooth_steps, smooth_loss, color='red', label=f'Smoothed (MA={window})')
+        plt.plot(smooth_steps.tolist(), smooth_loss.tolist(), color='red', label=f'Smoothed (MA={window})')
         
     plt.title(f"Training Loss Check ({os.path.basename(log_path)})")
     plt.xlabel("Step")
@@ -81,7 +83,7 @@ def analyze_log(log_path):
     
     # LR Curve
     plt.subplot(2, 1, 2)
-    plt.plot(steps, lrs, color='green', label='Learning Rate')
+    plt.plot(steps.tolist(), lrs.tolist(), color='green', label='Learning Rate')
     plt.xlabel("Step")
     plt.ylabel("LR")
     plt.legend()
