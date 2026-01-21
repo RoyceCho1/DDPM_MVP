@@ -23,13 +23,9 @@ def save_images(images, path, nrow=8, **kwargs):
     [Image Saving Helper]
     모델이 생성한 [-1, 1] 범위의 텐서를 사람이 볼 수 있는 [0, 1] 이미지 파일로 저장합니다.
     """
-    # 1. [-1, 1] -> [0, 1] Unnormalization
-    # 모델 출력은 tanh를 거쳐 -1~1 범위의 이미지가 됩니다. 이를 0~1 범위로 변환한다
-    grid = (images + 1) / 2
-
-    # 2. Clamping
-    # 수치 오차로 인해 0보다 작거나 1보다 큰 값이 생길 수 있으므로 잘라낸다
-    grid = torch.clamp(grid, 0, 1)
+    # 1. Clamping
+    # 수치 오차로 인해 0보다 작거나 1보다 큰 값이 생길 수 있으므로 잘라낸다 (Input should be [0, 1])
+    grid = torch.clamp(images, 0, 1)
     
     # 3. Make Grid & Save
     # 배치 이미지들을 보기 좋게 Grid로 묶어서 저장

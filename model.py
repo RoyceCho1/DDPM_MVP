@@ -3,9 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ==============================================================================
 # 1. Helper Modules (기본 부품들)
-# ==============================================================================
 class SinusoidalPositionEmbeddings(nn.Module):
     """
     [Time Embedding Generator]
@@ -148,9 +146,7 @@ def default(val, d):
     return d
 
 
-# ==============================================================================
 # 2. Main U-Net Model (Phase 1 - No Attention)
-# ==============================================================================
 
 class Unet(nn.Module):
     """
@@ -199,9 +195,8 @@ class Unet(nn.Module):
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
 
-        # ----------------------------------------------------------------------
+
         # 1. Encoder (Down Path) 구성
-        # ----------------------------------------------------------------------
         skip_dims = []
         cur_dim = init_dim
         
@@ -220,18 +215,14 @@ class Unet(nn.Module):
             skip_dims.append(dim_out)
             cur_dim = dim_out
 
-        # ----------------------------------------------------------------------
         # 2. Bottleneck (Middle Path) 구성
         # 가장 깊은 곳에서 Global한 특징을 정제
         # Attention이 들어간다면 보통 여기에 추가됨
-        # ----------------------------------------------------------------------
         self.mid_block1 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
         self.mid_block2 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
 
-        # ----------------------------------------------------------------------
         # 3. Decoder (Up Path) 구성
-        # [수정] 구조 변경: Upsample -> Concat -> ResBlocks
-        # ----------------------------------------------------------------------
+        # 구조: Upsample -> Concat -> ResBlocks
         skip_dims_reversed = list(reversed(skip_dims))
         
         for i, (dim_in, dim_out) in enumerate(reversed(in_out)):

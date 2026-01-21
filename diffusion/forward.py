@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 
 from diffusion.utils import extract
-# from diffusion.beta_schedule import DiffusionSchedule # Circular import 방지를 위해 타입 힌트는 문자열 처리하거나 TYPE_CHECKING 사용 권장
+
 
 def q_sample(
     x_start: torch.Tensor,

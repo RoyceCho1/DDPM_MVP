@@ -18,6 +18,8 @@ def linear_beta_schedule(
     For CIFAR-10 in the paper, beta_start = 0.0001, beta_end = 0.02, T = 1000.
     beta 정의: 노이즈 분산
     """
+
+    # 예외 처리
     if timesteps <= 0:
         raise ValueError("timesteps must be greater than 0")
     if not(0.0 < beta_start < beta_end < 1.0):

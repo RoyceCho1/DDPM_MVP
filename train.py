@@ -27,20 +27,16 @@ def get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps):
     return LambdaLR(optimizer, lr_lambda)
 
 def train(args):
-    # ==========================================================================================
     # 1. 초기 설정 (Setup)
-    # ==========================================================================================
     setup_seed(args.seed) # 재현성을 위한 시드 고정
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"🚀 Training on {device} with seed {args.seed}")
+    print(f"Training on {device} with seed {args.seed}")
     
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
         print(f"   - GPU: {torch.cuda.get_device_name(0)}")
 
-    # ==========================================================================================
     # 2. 로깅 및 저장 경로 설정 (Logging)
-    # ==========================================================================================
     # results/실험이름/samples, results/실험이름/checkpoints 폴더 생성
     logger = prepare_logging(args.run_name)
     
@@ -60,28 +56,24 @@ def train(args):
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(sample_dir, exist_ok=True)
 
-    # ==========================================================================================
     # 3. 데이터 로드 (Data Loading)
-    # ==========================================================================================
-    print("📚 Loading Dataset...")
+    print("Loading Dataset...")
     # dataset.py의 get_dataloader 사용 (다운로드 및 전처리 포함)
     dataloader = get_dataloader(
         batch_size=args.batch_size,
         num_workers=args.num_workers
     )
     
-    # [Safety Check] 데이터가 [-1, 1] 범위로 잘 정규화되었는지 확인
+    # Safety Check: 데이터가 [-1, 1] 범위로 잘 정규화되었는지 확인
     # DDPM은 가우시안 노이즈(평균 0, 분산 1)를 다루므로 입력 데이터도 -1~1 범위여야 성능이 나옴
     sample_img, _ = next(iter(dataloader))
     if sample_img.min() < -1.1 or sample_img.max() > 1.1:
-        print(f"⚠️ Warning: Data range seems off. Min: {sample_img.min():.2f}, Max: {sample_img.max():.2f}")
+        print(f"Warning: Data range seems off. Min: {sample_img.min():.2f}, Max: {sample_img.max():.2f}")
     else:
-        print(f"✅ Data range verified: [{sample_img.min():.2f}, {sample_img.max():.2f}]")
+        print(f"Data range verified: [{sample_img.min():.2f}, {sample_img.max():.2f}]")
 
-    # ==========================================================================================
     # 4. 모델 및 최적화 설정 (Model & Optimizer)
-    # ==========================================================================================
-    print("🏗️ Initializing Model...")
+    print("Initializing Model...")
     model = Unet(
         dim=64,                # 기본 채널 수
         channels=3,            # RGB
@@ -122,13 +114,11 @@ def train(args):
     if args.amp:
         print("   - Mixed Precision (AMP) Enabled")
 
-    # ==========================================================================================
     # 5. 학습 루프 (Training Loop)
-    # ==========================================================================================
     global_step = 0
     total_steps = args.max_steps
     
-    print(f"🏁 Starting Training for {total_steps} steps...")
+    print(f"Starting Training for {total_steps} steps...")
     
     ddpm.train() # Explicit Train Mode
 
@@ -149,7 +139,7 @@ def train(args):
             
             # Loss Check (NaN/Inf)
             if not torch.isfinite(loss):
-                print(f"⚠️ Warning: Loss is {loss.item()} at step {global_step}. Skipping step.")
+                print(f"Warning: Loss is {loss.item()} at step {global_step}. Skipping step.")
                 scaler.update() 
                 continue
 
@@ -190,11 +180,11 @@ def train(args):
                     save_dict['ema_state_dict'] = ema.state_dict()
                 
                 torch.save(save_dict, save_path)
-                print(f"💾 Checkpoint saved: {save_path}")
+                print(f"Checkpoint saved: {save_path}")
                 
             # Sampling
             if global_step % args.sample_interval == 0 and global_step > 0:
-                print(f"✨ Sampling {args.num_samples} images at step {global_step}...")
+                print(f"Sampling {args.num_samples} images at step {global_step}...")
                 
                 # Eval Mode
                 ddpm.eval()
@@ -214,10 +204,11 @@ def train(args):
                 ddpm.train() # Restore Train Mode
 
                 # Save Image
-                # Pass [-1, 1] directly to utils.save_images
+                # [-1, 1] -> [0, 1]
+                sampled_images = (sampled_images + 1) * 0.5
                 save_path = os.path.join(sample_dir, f"sample_step_{global_step}.png")
                 save_images(sampled_images, save_path) 
-                print(f"🖼️ Sample saved: {save_path}")
+                print(f"Sample saved: {save_path}")
             
             global_step += 1
             
@@ -230,7 +221,7 @@ def train(args):
         'args': args
     }
     torch.save(save_dict, final_ckpt_path)
-    print("🏆 Training Complete!")
+    print("Training Complete!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="DDPM Training - CIFAR10")
