@@ -40,6 +40,8 @@ def analyze_log(log_path):
 
     steps = np.array(steps)
     losses = np.array(losses)
+    lrs = np.array(lrs)
+
     
     # 3. 통계 분석
     min_loss = np.min(losses)               # 최소 Loss 값
