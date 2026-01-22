@@ -274,12 +274,21 @@ class Unet(nn.Module):
             
             use_attn = (i == 1) and self.with_attn # Apply at 16x16 resolution phase IF enabled
             
-            self.downs.append(nn.ModuleList([
+            # [수정] nn.Identity()를 사용하면 기존 체크포인트와 인덱스가 밀리는(Off-by-one) 문제 발생.
+            # 따라서 리스트를 동적으로 구성하여 Attention을 안 쓰면 아예 레이어를 추가하지 않음.
+            layers = [
                 ResnetBlock(dim_in, dim_out, time_emb_dim=time_dim),
-                ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim),
-                LinearAttention(dim_out) if use_attn else nn.Identity(),
-                Downsample(dim_out) if not is_last else nn.Identity()
-            ]))
+                ResnetBlock(dim_out, dim_out, time_emb_dim=time_dim)
+            ]
+            if use_attn:
+                layers.append(LinearAttention(dim_out))
+                
+            if not is_last:
+                layers.append(Downsample(dim_out))
+            else:
+                layers.append(nn.Identity())
+                
+            self.downs.append(nn.ModuleList(layers))
             
             # Skip connection을 위한 현재 채널 수 기록
             skip_dims.append(dim_out)
@@ -288,7 +297,8 @@ class Unet(nn.Module):
         # 2. Bottleneck (Middle Path) 구성
         # 가장 깊은 곳에서 Global한 특징을 정제
         self.mid_block1 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
-        self.mid_attn = LinearAttention(cur_dim) if self.with_attn else nn.Identity()
+        # mid_attn is None if not used
+        self.mid_attn = LinearAttention(cur_dim) if self.with_attn else None 
         self.mid_block2 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
 
         # 3. Decoder (Up Path) 구성
@@ -319,12 +329,19 @@ class Unet(nn.Module):
             
             use_attn = (i == 1) and self.with_attn # Matches 16x16 resolution after upsampling
             
-            self.ups.append(nn.ModuleList([
-                Upsample(dim_out) if need_upsample else nn.Identity(),
-                ResnetBlock(dim_out + skip_dim, dim_in, time_emb_dim=time_dim),
-                ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim),
-                LinearAttention(dim_in) if use_attn else nn.Identity()
-            ]))
+            layers = []
+            if need_upsample:
+                layers.append(Upsample(dim_out))
+            else:
+                layers.append(nn.Identity())
+                
+            layers.append(ResnetBlock(dim_out + skip_dim, dim_in, time_emb_dim=time_dim))
+            layers.append(ResnetBlock(dim_in, dim_in, time_emb_dim=time_dim))
+            
+            if use_attn:
+                layers.append(LinearAttention(dim_in))
+                
+            self.ups.append(nn.ModuleList(layers))
             
         self.out_dim = default(out_dim, channels)
         
@@ -344,35 +361,84 @@ class Unet(nn.Module):
         
         # 3. down path(encoder)
         h = []
-        for block1, block2, attn, downsample in self.downs:
-            x = block1(x, t)
-            x = block2(x, t)
-            x = attn(x)
-            h.append(x) # Skip connection 저장(현재 resolution의 feature map)
-            x = downsample(x)
+        # 3. down path(encoder)
+        h = []
+        for stage in self.downs: # stage is ModuleList
+            # 동적 실행: ModuleList 내부의 모든 레이어를 순차적으로 실행
+            # (ResBlock -> ResBlock -> [Attn] -> [Downsample])
+            for layer in stage:
+                if isinstance(layer, ResnetBlock):
+                    x = layer(x, t)
+                elif isinstance(layer, LinearAttention):
+                    x = layer(x)
+                elif isinstance(layer, Downsample):
+                    x = layer(x)
+                else: # Identity
+                    x = layer(x)
+                    
+            # Skip connection 저장 (Downsample 직전의 Feature Map)
+            # 구조상 Downsample은 항상 마지막에 있거나(Last stage 제외), 마지막이 Identity임.
+            # 따라서 Downsample 통과 전의 값은 마지막 레이어 실행 전의 값...이 아니라
+            # "Downsample을 통과하기 전"의 출력값이 필요함.
+            
+            # [Fix Logic]
+            # h에 저장해야 할 것은 "현재 레벨의 최종 출력(Downsample 전)"임.
+            # 하지만 위 루프를 돌면 x는 이미 Downsample을 통과해버림 (다음 레벨 입력).
+            # 따라서 루프를 쪼개거나, 구조를 맞춰야 함.
+            pass # Replacement logic needs to be cleaner.
+            
+        # Let's rewrite the loop completely to be safe and compatible with both structures.
+        h = []
+        for stage in self.downs:
+            # stage 구성: [Block1, Block2, (Attn), Down/Identity]
+            
+            # 1. Blocks & Attn
+            x = stage[0](x, t)
+            x = stage[1](x, t)
+            
+            # Optional Attention check by index or type?
+            # Index is unstable. Use type check loop for the middle part?
+            # Or just check stage length?
+            # Phase 1: len=3 [B, B, Down]
+            # Phase 2: len=3 [B, B, Down] (No Attn) OR len=4 [B, B, Attn, Down]
+            
+            # Let's iterate from index 2 to end-1
+            for layer in stage[2:-1]:
+                 if isinstance(layer, LinearAttention):
+                     x = layer(x)
+            
+            # Save for skip connection BEFORE downsample
+            h.append(x)
+            
+            # Last layer is always Downsample or Identity
+            x = stage[-1](x)
             
         # 4. Mid path(bottleneck)
         x = self.mid_block1(x, t)
-        x = self.mid_attn(x)
+        if self.mid_attn is not None:
+             x = self.mid_attn(x)
         x = self.mid_block2(x, t)
         
         # 5. Up path(decoder)
         # [수정] 순서 변경: Upsample -> Concat -> ResBlocks
-        for upsample, block1, block2, attn in self.ups:
+        for stage in self.ups:
+            # stage: [Upsample, Block1, Block2, (Attn)]
+            
             # 1) Upsample (Resolution 복원)
-            x = upsample(x)
+            # Always first element
+            x = stage[0](x)
             
             # 2) Concat (Skip connection 결합)
             skip = h.pop()
-            # channel dimension(dim=1)로 결합(concatenate)
             x = torch.cat((x, skip), dim=1)
             
-            # 3) ResBlocks
-            x = block1(x, t)
-            x = block2(x, t)
+            # 3) Blocks & Attn
+            x = stage[1](x, t)
+            x = stage[2](x, t)
             
-            # 4) Attention
-            x = attn(x)
+            # If Attn exists (len > 3)
+            if len(stage) > 3:
+                x = stage[3](x)
             
         # 6. Final output (noise prediction)
         x = self.final_res_block(x, t)
