@@ -223,7 +223,7 @@ if __name__ == '__main__':
     
     # Training Hyperparameters
     parser.add_argument('--run_name', type=str, default='ddpm_cifar10_exp1', help='Experiment name')
-    parser.add_argument('--max_steps', type=int, default=800000, help='Total training steps')
+    parser.add_argument('--max_steps', type=int, default=100000, help='Total training steps')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
     parser.add_argument('--warmup_steps', type=int, default=5000, help='Warmup steps')

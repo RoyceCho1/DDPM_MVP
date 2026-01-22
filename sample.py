@@ -38,7 +38,7 @@ def sample(args):
     # inference 시 동일한 설정을 그대로 재현해야 함.
     dim = getattr(train_args, 'dim', 64)    # 안전장치용(실제로는 사용 안됨)
     
-    print("🏗️ Initializing Model...")
+    print("Initializing Model...")
     # train.py에서 하드코딩했던 값들을 그대로 사용
     model = Unet(
         dim=64,                  # train.py와 동일
@@ -61,33 +61,30 @@ def sample(args):
         loss_type='l2'
     ).to(device)
     
-    # ==========================================================================================
+
     # 4. Load Weights (EMA vs Standard)
-    # ==========================================================================================
     loaded_ema = False
     
     # 사용자가 EMA 가중치 사용을 원하고, 체크포인트에 EMA 데이터가 있다면 우선 로드
     if args.use_ema:
         if 'ema_state_dict' in ckpt:
             print("✨ Loading EMA weights for better quality...")
-            # ddpm.denoise_model은 위에서 만든 model 객체를 가리키므로,
+            # ddpm.model은 위에서 만든 model 객체를 가리키므로,
             # EMA 가중치를 이 객체에 로드함
-            ddpm.denoise_model.load_state_dict(ckpt['ema_state_dict'])
+            ddpm.model.load_state_dict(ckpt['ema_state_dict'])
             loaded_ema = True
         else:
             print("⚠️ EMA weights requested but not found in checkpoint. Loading standard weights.")
-            ddpm.denoise_model.load_state_dict(ckpt['model_state_dict'])
+            ddpm.model.load_state_dict(ckpt['model_state_dict'])
     else:
         # EMA를 끄거나 체크포인트에 없는 경우 일반 weight 로드
         print("Standard weights loaded (EMA disabled).")
-        ddpm.denoise_model.load_state_dict(ckpt['model_state_dict'])
+        ddpm.model.load_state_dict(ckpt['model_state_dict'])
     
     # 모델을 평가 모드로 전환
     ddpm.eval()
     
-    # ==========================================================================================
     # 5. Generation Loop
-    # ==========================================================================================
     os.makedirs(args.output_dir, exist_ok=True)
     
     total_samples = args.num_samples
@@ -96,7 +93,7 @@ def sample(args):
     all_images = []
     generated_count = 0
     
-    print(f"🎨 Generating {total_samples} samples in {batches} batches...")
+    print(f"Generating {total_samples} samples in {batches} batches...")
     
     with torch.no_grad():
         for i in tqdm(range(batches), desc="Sampling Batches"):
@@ -123,11 +120,11 @@ def sample(args):
     
     save_path = os.path.join(args.output_dir, save_filename)
     
-    print(f"💾 Saving grid image to {save_path}...")
+    print(f"Saving grid image to {save_path}...")
     # save_images now expects [0, 1]
     save_images(all_images, save_path, nrow=args.grid_nrow)
     
-    print("✅ Done!")
+    print("Done!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="DDPM Inference - CIFAR10")
