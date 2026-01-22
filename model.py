@@ -209,10 +209,12 @@ class Unet(nn.Module):
         out_dim=None,          # 최종 출력 채널 (RGB면 3)
         dim_mults=(1, 2, 2, 4),# 채널 배수 (예: 64 -> 128 -> 128 -> 256)
         channels=3,            # 입력 이미지 채널 (RGB)
-        with_time_emb=True     # 시간 임베딩 사용 여부
+        with_time_emb=True,    # 시간 임베딩 사용 여부
+        with_attn=True         # [NEW] Attention 사용 여부 (Phase 1 호환성용)
     ):
         super().__init__()
         self.channels = channels
+        self.with_attn = with_attn # 저장
         
         init_dim = default(init_dim, dim)
         
@@ -270,7 +272,7 @@ class Unet(nn.Module):
             # dim_mults=(1, 2, 2, 4) -> (64, 128, 128, 256)
             # i=1 corresponds to 128ch (16x16). 
             
-            use_attn = (i == 1) # Apply at 16x16 resolution phase
+            use_attn = (i == 1) and self.with_attn # Apply at 16x16 resolution phase IF enabled
             
             self.downs.append(nn.ModuleList([
                 ResnetBlock(dim_in, dim_out, time_emb_dim=time_dim),
@@ -286,7 +288,7 @@ class Unet(nn.Module):
         # 2. Bottleneck (Middle Path) 구성
         # 가장 깊은 곳에서 Global한 특징을 정제
         self.mid_block1 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
-        self.mid_attn = LinearAttention(cur_dim)
+        self.mid_attn = LinearAttention(cur_dim) if self.with_attn else nn.Identity()
         self.mid_block2 = ResnetBlock(cur_dim, cur_dim, time_emb_dim=time_dim)
 
         # 3. Decoder (Up Path) 구성
@@ -315,7 +317,7 @@ class Unet(nn.Module):
             # i=1: Input(8x8), Upsample(16x16), ResBlock(16x16), ATTENTION(16x16)
             # i=2: Input(16x16), Upsample(32x32), ResBlock(32x32)
             
-            use_attn = (i == 1) # Matches 16x16 resolution after upsampling
+            use_attn = (i == 1) and self.with_attn # Matches 16x16 resolution after upsampling
             
             self.ups.append(nn.ModuleList([
                 Upsample(dim_out) if need_upsample else nn.Identity(),

@@ -38,13 +38,24 @@ def sample(args):
     # inference 시 동일한 설정을 그대로 재현해야 함.
     dim = getattr(train_args, 'dim', 64)    # 안전장치용(실제로는 사용 안됨)
     
+    # [Auto-Detection] Attention 사용 여부 확인
+    # 체크포인트의 state_dict 키를 검사하여 'mid_attn'이나 'to_qkv'가 있는지 확인
+    state_dict_to_check = ckpt['model_state_dict']
+    has_attn = any('mid_attn' in k or 'to_qkv' in k for k in state_dict_to_check.keys())
+    
+    if has_attn:
+        print("✅ Detected Attention layers in checkpoint.")
+    else:
+        print("ℹ️ No Attention layers detected (Phase 1 checkpoint).")
+
     print("Initializing Model...")
     # train.py에서 하드코딩했던 값들을 그대로 사용
     model = Unet(
         dim=64,                  # train.py와 동일
         channels=3,              # CIFAR-10 RGB
         dim_mults=(1, 2, 2, 4),   # train.py와 동일
-        with_time_emb=True
+        with_time_emb=True,
+        with_attn=has_attn     # 감지된 설정 적용
     ).to(device)
 
     # DDPM 설정 값 추출
@@ -68,13 +79,13 @@ def sample(args):
     # 사용자가 EMA 가중치 사용을 원하고, 체크포인트에 EMA 데이터가 있다면 우선 로드
     if args.use_ema:
         if 'ema_state_dict' in ckpt:
-            print("✨ Loading EMA weights for better quality...")
+            print("Loading EMA weights for better quality...")
             # ddpm.model은 위에서 만든 model 객체를 가리키므로,
             # EMA 가중치를 이 객체에 로드함
             ddpm.model.load_state_dict(ckpt['ema_state_dict'])
             loaded_ema = True
         else:
-            print("⚠️ EMA weights requested but not found in checkpoint. Loading standard weights.")
+            print("EMA weights requested but not found in checkpoint. Loading standard weights.")
             ddpm.model.load_state_dict(ckpt['model_state_dict'])
     else:
         # EMA를 끄거나 체크포인트에 없는 경우 일반 weight 로드
