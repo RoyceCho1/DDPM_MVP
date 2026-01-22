@@ -363,33 +363,8 @@ class Unet(nn.Module):
         h = []
         # 3. down path(encoder)
         h = []
-        for stage in self.downs: # stage is ModuleList
-            # 동적 실행: ModuleList 내부의 모든 레이어를 순차적으로 실행
-            # (ResBlock -> ResBlock -> [Attn] -> [Downsample])
-            for layer in stage:
-                if isinstance(layer, ResnetBlock):
-                    x = layer(x, t)
-                elif isinstance(layer, LinearAttention):
-                    x = layer(x)
-                elif isinstance(layer, Downsample):
-                    x = layer(x)
-                else: # Identity
-                    x = layer(x)
-                    
-            # Skip connection 저장 (Downsample 직전의 Feature Map)
-            # 구조상 Downsample은 항상 마지막에 있거나(Last stage 제외), 마지막이 Identity임.
-            # 따라서 Downsample 통과 전의 값은 마지막 레이어 실행 전의 값...이 아니라
-            # "Downsample을 통과하기 전"의 출력값이 필요함.
-            
-            # [Fix Logic]
-            # h에 저장해야 할 것은 "현재 레벨의 최종 출력(Downsample 전)"임.
-            # 하지만 위 루프를 돌면 x는 이미 Downsample을 통과해버림 (다음 레벨 입력).
-            # 따라서 루프를 쪼개거나, 구조를 맞춰야 함.
-            pass # Replacement logic needs to be cleaner.
-            
-        # Let's rewrite the loop completely to be safe and compatible with both structures.
-        h = []
         for stage in self.downs:
+            # stage 구성: [Block1, Block2, (Attn), Down/Identity]
             # stage 구성: [Block1, Block2, (Attn), Down/Identity]
             
             # 1. Blocks & Attn
