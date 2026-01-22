@@ -282,6 +282,12 @@ class Unet(nn.Module):
             ]
             if use_attn:
                 layers.append(LinearAttention(dim_out))
+            elif self.with_attn:
+                # Phase 2 Checkpoint Compatibility:
+                # Phase 2 was trained with `nn.Identity()` in place of Attention for i!=1.
+                # So if we are in Phase 2 mode (with_attn=True) but not at the attention resolution,
+                # we must add Identity to match the layer index (Downsample at index 3).
+                layers.append(nn.Identity())
                 
             if not is_last:
                 layers.append(Downsample(dim_out))
@@ -340,6 +346,9 @@ class Unet(nn.Module):
             
             if use_attn:
                 layers.append(LinearAttention(dim_in))
+            elif self.with_attn:
+                 # Phase 2 Compatibility
+                layers.append(nn.Identity())
                 
             self.ups.append(nn.ModuleList(layers))
             
