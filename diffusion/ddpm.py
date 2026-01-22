@@ -8,14 +8,14 @@ from typing import Optional, Tuple
 # (IDE에서 schedule 객체의 속성을 자동완성 하거나 타입 체크를 할 수 있게 도와줍니다)
 from diffusion.beta_schedule import make_ddpm_schedule, DiffusionSchedule
 from diffusion.loss import p_losses
-from diffusion.sampling import p_sample_loop
+from diffusion.sampling import p_sample_loop, ddim_sample_loop
 
 class DDPM(nn.Module):
     """
     DDPM (Denoising Diffusion Probabilistic Models) Wrapper Class
     이 클래스는 DDPM의 학습과 추론(샘플링) 전체 과정을 관장하는 컨트롤 타워입니다.
     
-    [핵심 역할]
+    역할
     1. Model Management: 노이즈를 예측하는 U-Net 모델(denoise_model)을 관리합니다.
     2. Schedule Management: 확산 과정에 필요한 상수들(beta, alpha 등)을 생성하고 관리합니다.
        - register_buffer를 사용해 GPU 이동(cuda())과 저장(state_dict)을 자동화합니다.
@@ -161,3 +161,25 @@ class DDPM(nn.Module):
             device=device,
             capture_every=capture_every
         )
+
+    @torch.no_grad()
+    def sample_ddim(
+        self, 
+        shape: Tuple[int, ...], 
+        ddim_steps: int = 50, 
+        eta: float = 0.0, 
+        capture_every: int = None
+    ) -> torch.Tensor | list[torch.Tensor]:
+        # DDIM Sampling을 수행합니다.
+        device = next(self.parameters()).device
+        
+        return ddim_sample_loop(
+            model=self.model,
+            shape=shape,       
+            schedule=self.schedule,
+            device=device,
+            ddim_steps=ddim_steps,
+            eta=eta,
+            capture_every=capture_every
+        )
+

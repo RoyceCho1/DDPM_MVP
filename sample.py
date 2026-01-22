@@ -44,9 +44,9 @@ def sample(args):
     has_attn = any('mid_attn' in k or 'to_qkv' in k for k in state_dict_to_check.keys())
     
     if has_attn:
-        print("✅ Detected Attention layers in checkpoint.")
+        print("Detected Attention layers in checkpoint.")
     else:
-        print("ℹ️ No Attention layers detected (Phase 1 checkpoint).")
+        print("No Attention layers detected (Phase 1 checkpoint).")
 
     print("Initializing Model...")
     # train.py에서 하드코딩했던 값들을 그대로 사용
@@ -112,9 +112,18 @@ def sample(args):
             current_bs = min(args.batch_size, total_samples - generated_count)
             
             # Sampling (reverse process) -> [-1, 1]
-            # If save_process is True, returns List[Tensor]
             capture_step = args.process_interval if args.save_process else None
-            imgs = ddpm.sample(shape=(current_bs, 3, 32, 32), capture_every=capture_step)
+            
+            if args.method == 'ddpm':
+                imgs = ddpm.sample(shape=(current_bs, 3, 32, 32), capture_every=capture_step)
+            else: # ddim
+                # ddim 방식(50 steps)
+                imgs = ddpm.sample_ddim(
+                    shape=(current_bs, 3, 32, 32),
+                    ddim_steps=args.ddim_steps,
+                    eta=args.eta,
+                    capture_every=capture_step
+                )
             
             all_images.append(imgs)
             generated_count += current_bs
@@ -197,6 +206,11 @@ if __name__ == '__main__':
     parser.add_argument('--use_ema', type=str, default='true', choices=['true', 'false'], help='Use EMA weights if available')
     parser.add_argument('--save_process', action='store_true', help='Save intermediate diffusion steps')
     parser.add_argument('--process_interval', type=int, default=100, help='Interval for saving intermediate steps')
+    
+    # DDIM Arguments
+    parser.add_argument('--method', type=str, default='ddpm', choices=['ddpm', 'ddim'], help='Sampling method')
+    parser.add_argument('--ddim_steps', type=int, default=50, help='Number of steps for DDIM')
+    parser.add_argument('--eta', type=float, default=0.0, help='DDIM stochasticity (0.0=deterministic, 1.0=DDPM)')
     
     args = parser.parse_args()
     args.use_ema = args.use_ema.lower() == 'true'
