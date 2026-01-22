@@ -112,14 +112,57 @@ def sample(args):
             current_bs = min(args.batch_size, total_samples - generated_count)
             
             # Sampling (reverse process) -> [-1, 1]
-            imgs = ddpm.sample(shape=(current_bs, 3, 32, 32))
+            # If save_process is True, returns List[Tensor]
+            capture_step = args.process_interval if args.save_process else None
+            imgs = ddpm.sample(shape=(current_bs, 3, 32, 32), capture_every=capture_step)
             
-            all_images.append(imgs.cpu())
+            all_images.append(imgs)
             generated_count += current_bs
             
-    # Concatenate all batches
-    all_images = torch.cat(all_images, dim=0)
-    
+    # Post-processing
+    if args.save_process:
+        # all_images: List of List[Tensor(B, C, H, W)] (Batches x TimeSteps)
+        # We want to stack batches first.
+        # List[Batch] -> List[TimeStep] -> Tensor(B...)
+        # Let's flatten: For each batch, we have N steps.
+        # Goal: Tensor (TotalSamples, TimeSteps, C, H, W) -> Grid
+        
+        # 1. Unpack batches
+        # imgs_per_step: List[Tensor(TotalB, C, H, W)]
+        num_steps = len(all_images[0])
+        imgs_per_step = []
+        for step_idx in range(num_steps):
+             # Collect step_idx-th tensor from all batches
+             step_batches = [batch_list[step_idx].to('cpu') for batch_list in all_images]
+             step_batch = torch.cat(step_batches, dim=0)
+             imgs_per_step.append(step_batch)
+             
+        # 2. Make Grid
+        # We want rows = Random Samples, Cols = Time Steps
+        # Each row: T_0, T_100, ..., T_1000 (Data)
+        # imgs_per_step[0] is T=1000 (Noise)? No, loop is T-1 to 0.
+        # p_sample_loop logic:
+        # capture every 100 on loop i (T-1..0)
+        # If capture_every=100: i=900, 800.., 0.
+        # Order in list: High Noise -> Low Noise (Data at end).
+        
+        # Grid construction:
+        # For each sample in batch:
+        #   [Img_step0, Img_step1, ... Img_final]
+        
+        final_grid_list = []
+        for sample_idx in range(args.num_samples):
+            row_imgs = [step_imgs[sample_idx] for step_imgs in imgs_per_step]
+            final_grid_list.extend(row_imgs)
+            
+        all_images = torch.stack(final_grid_list)
+        args.grid_nrow = num_steps # Force row width to match steps
+        
+    else:
+        # List of Tensors(B, C, H, W) -> Tensor(TotalB, C, H, W)
+        all_images = [img.to('cpu') for img in all_images]
+        all_images = torch.cat(all_images, dim=0)
+
     # [-1, 1] -> [0, 1] Conversion (Consistency)
     all_images = (all_images + 1) * 0.5
     
@@ -127,6 +170,10 @@ def sample(args):
     save_filename = f"sample_{args.num_samples}_seed{args.seed}"
     if loaded_ema:
         save_filename += "_ema"
+    
+    if args.save_process:
+        save_filename += "_process"
+        
     save_filename += ".png"
     
     save_path = os.path.join(args.output_dir, save_filename)
@@ -148,6 +195,8 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda', help='Device to use (cuda/cpu)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--use_ema', type=str, default='true', choices=['true', 'false'], help='Use EMA weights if available')
+    parser.add_argument('--save_process', action='store_true', help='Save intermediate diffusion steps')
+    parser.add_argument('--process_interval', type=int, default=100, help='Interval for saving intermediate steps')
     
     args = parser.parse_args()
     args.use_ema = args.use_ema.lower() == 'true'

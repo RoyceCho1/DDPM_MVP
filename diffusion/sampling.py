@@ -63,13 +63,18 @@ def p_sample_loop(
     model: torch.nn.Module, 
     shape: tuple, 
     schedule, 
-    device: torch.device
-) -> torch.Tensor:
+    device: torch.device,
+    capture_every: int = None
+) -> torch.Tensor | list[torch.Tensor]:
     """
     Full Reverse Process (Algorithm 2)
     x_T ~ N(0, I) 부터 시작해서 x_0까지 순차적으로 복원.
+    capture_every (int): 지정된 스텝마다 이미지를 저장하여 리스트로 반환 (Visualizing Process용)
     """
     b = shape[0]
+    
+    # [Visualization] 중간 과정 저장용 리스트
+    imgs = []
 
     # Step 1: 완전 Gaussian Noise에서 시작
     img = torch.randn(shape, device=device)
@@ -89,6 +94,15 @@ def p_sample_loop(
             t_index=i, 
             schedule=schedule
         )
+
+        # [Visualization] Capture intermediate step
+        if capture_every is not None and i % capture_every == 0:
+            imgs.append(img)
+            
+    # [Visualization] Return logic
+    if capture_every is not None:
+        imgs.append(img) # Add final x_0
+        return imgs # List of Tensors
 
     # Step 5: Return x_0   
     return img

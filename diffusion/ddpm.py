@@ -136,7 +136,7 @@ class DDPM(nn.Module):
         return loss
     
     @torch.no_grad()
-    def sample(self, shape: Tuple[int, ...]) -> torch.Tensor:
+    def sample(self, shape: Tuple[int, ...], capture_every: int = None) -> torch.Tensor | list[torch.Tensor]:
         """
         [Inference Step - Algorithm 2]
         새로운 이미지를 생성할 때 호출되는 함수입니다.
@@ -144,8 +144,9 @@ class DDPM(nn.Module):
         
         Args:
             shape: 생성할 이미지의 형태 (Batch, Channel, Height, Width)
+            capture_every: 중간 과정 캡처 간격 (int or None)
         Returns:
-            Generated Images (Tensor): [-1, 1] 범위로 생성된 이미지
+            Generated Images (Tensor): [-1, 1] 범위로 생성된 이미지 (or List of Images)
         """
         # 모델 파라미터가 위치한 디바이스를 확인합니다. (CPU or CUDA)
         device = next(self.parameters()).device
@@ -157,5 +158,6 @@ class DDPM(nn.Module):
             model=self.model,
             shape=shape,
             schedule=self.schedule,
-            device=device
+            device=device,
+            capture_every=capture_every
         )
