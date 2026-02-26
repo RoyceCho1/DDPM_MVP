@@ -10,7 +10,8 @@ def p_sample(
     x: torch.Tensor, 
     t: torch.Tensor, 
     t_index: int, 
-    schedule
+    schedule,
+    generator: torch.Generator | None = None
 ) -> torch.Tensor:
     """
     Reverse Diffusion Step: x_t -> x_{t-1}
@@ -25,6 +26,7 @@ def p_sample(
         t: 현재 timestep (t)
         t_index: 현재 timestep 인덱스
         schedule: DiffusionSchedule 객체
+        generator: 난수 생성 제어를 위한 Generator 객체
     """
 
     # 1. 필요 계수 추출(Coefficient Extraction)
@@ -54,8 +56,12 @@ def p_sample(
         posterior_log_variance_t = extract(schedule.posterior_log_variance_clipped, t, x.shape)
 
         # z ~ N(0, I)(Random Noise)
-        noise = torch.randn_like(x)
+        if generator is not None:
+            noise = torch.randn(x.size(), generator=generator, device=x.device, dtype=x.dtype)
+        else:
+            noise = torch.randn_like(x)
         
+        noise = 0
         # x_{t-1} = mu + sigma * z
         return model_mean + torch.exp(0.5 * posterior_log_variance_t) * noise
 
@@ -65,7 +71,8 @@ def p_sample_loop(
     shape: tuple, 
     schedule, 
     device: torch.device,
-    capture_every: int = None
+    capture_every: int = None,
+    generator: torch.Generator | None = None
 ) -> torch.Tensor | list[torch.Tensor]:
     """
     Full Reverse Process (Algorithm 2)
@@ -78,7 +85,10 @@ def p_sample_loop(
     imgs = []
 
     # Step 1: 완전 Gaussian Noise에서 시작
-    img = torch.randn(shape, device=device)
+    if generator is not None:
+        img = torch.randn(shape, generator=generator, device=device)
+    else:
+        img = torch.randn(shape, device=device)
     
     # Step 2: Iterate from T-1 down to 0
     # tqdm으로 진행 상황 표시
@@ -93,7 +103,8 @@ def p_sample_loop(
             x=img, 
             t=t, 
             t_index=i, 
-            schedule=schedule
+            schedule=schedule,
+            generator=generator
         )
 
         # [Visualization] Capture intermediate step
@@ -175,7 +186,8 @@ def ddim_sample_loop(
     device: torch.device,
     ddim_steps: int = 50,
     eta: float = 0.0,
-    capture_every: int = None
+    capture_every: int = None,
+    generator: torch.Generator | None = None
 ) -> torch.Tensor | list[torch.Tensor]:
     """
     DDIM Sampling Loop
@@ -185,7 +197,10 @@ def ddim_sample_loop(
     imgs = []
     
     # random noise에서 시작
-    img = torch.randn(shape, device=device)
+    if generator is not None:
+        img = torch.randn(shape, generator=generator, device=device)
+    else:
+        img = torch.randn(shape, device=device)
     
     # timestep 선정
     # 예: T=1000, ddim_steps=50 -> [0, 20, 40, ..., 980](총 50 step)
@@ -245,7 +260,10 @@ def ddim_sample_loop(
         if eta == 0:
             noise = 0
         else:
-            noise = torch.randn_like(img)
+            if generator is not None:
+                noise = torch.randn(img.size(), generator=generator, device=img.device, dtype=img.dtype)
+            else:
+                noise = torch.randn_like(img)
             
         # 7. Update
         # 수식: x_{t-1} = (원본 성분) + (방향 성분) + (random noise 성분)

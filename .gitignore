@@ -1,0 +1,18 @@
+# Mac OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+
+# Project specific
+logs/
+images/
+generated/
+training_analysis.png

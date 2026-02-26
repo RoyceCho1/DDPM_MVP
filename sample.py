@@ -111,18 +111,29 @@ def sample(args):
             # Calculate exact batch size (Bug Fix: use generated_count)
             current_bs = min(args.batch_size, total_samples - generated_count)
             
+            # Create a generator for reproducibility
+            generator = torch.Generator(device=device)
+            # 배치가 달라져도 전체 샘플에서 항상 동일한 결과를 얻기 위해, 
+            # 배치 시작 index(generated_count)를 기준으로 시드를 생성합니다.
+            generator.manual_seed(args.seed + generated_count)
+            
             # Sampling (reverse process) -> [-1, 1]
             capture_step = args.process_interval if args.save_process else None
             
             if args.method == 'ddpm':
-                imgs = ddpm.sample(shape=(current_bs, 3, 32, 32), capture_every=capture_step)
+                imgs = ddpm.sample(
+                    shape=(current_bs, 3, 32, 32), 
+                    capture_every=capture_step,
+                    generator=generator
+                )
             else: # ddim
                 # ddim 방식(50 steps)
                 imgs = ddpm.sample_ddim(
                     shape=(current_bs, 3, 32, 32),
                     ddim_steps=args.ddim_steps,
                     eta=args.eta,
-                    capture_every=capture_step
+                    capture_every=capture_step,
+                    generator=generator
                 )
             
             all_images.append(imgs)
