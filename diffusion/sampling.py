@@ -49,6 +49,8 @@ def p_sample(
     # t=0 일 때는 noise 추가하지 않음
     if t_index == 0:
         return model_mean
+    # if t_index >= 500:
+    #     return model_mean
     else:
         # variance 선택 : sigma_t^2 = beta_t (or beta_tilde_t)
         # beta_tilde_t로 선택
@@ -61,7 +63,6 @@ def p_sample(
         else:
             noise = torch.randn_like(x)
         
-        noise = 0
         # x_{t-1} = mu + sigma * z
         return model_mean + torch.exp(0.5 * posterior_log_variance_t) * noise
 
