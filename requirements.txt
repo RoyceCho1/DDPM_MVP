@@ -1,0 +1,17 @@
+# Core Deep Learning Libraries
+# Driver Version: 460.32.03
+# CUDA Version: 11.2
+torch==1.10.2
+torchvision==0.11.3
+torchaudio==0.10.2
+
+# Utilities & Visualization
+tqdm==4.67.1
+matplotlib==3.9.4
+numpy==2.0.2
+Pillow==11.3.0
+einops==0.8.1
+
+# Logging
+tensorboard==2.20.0
+protobuf==6.33.4
