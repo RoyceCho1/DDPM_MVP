@@ -49,8 +49,8 @@ def p_sample(
     # t=0 일 때는 noise 추가하지 않음
     if t_index == 0:
         return model_mean
-    # if t_index >= 500:
-    #     return model_mean
+    elif t_index >= 500:
+        return model_mean
     else:
         # variance 선택 : sigma_t^2 = beta_t (or beta_tilde_t)
         # beta_tilde_t로 선택
